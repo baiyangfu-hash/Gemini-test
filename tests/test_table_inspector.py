@@ -126,6 +126,9 @@ class TestTableInspector(unittest.TestCase):
     def test_05_discover_machines(self):
         """Verify dynamic machine auto-discovery scans workspace directories correctly."""
         ws_root = os.path.abspath(os.path.join(WORKFLOW_ROOT, ".."))
+        corning_dir = os.path.join(ws_root, "康宁")
+        if not os.path.isdir(corning_dir):
+            self.skipTest(f"Corning workspace not found: {corning_dir}")
         machines = TableInspector.discover_machines(ws_root)
         self.assertGreaterEqual(len(machines), 3, "Should discover at least 3 Corning machines dynamically")
         names = [m["name"] for m in machines]
