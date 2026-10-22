@@ -200,7 +200,7 @@ class TestPriorityCollisionsAndOverrides(unittest.TestCase):
             priority = 5
 
             def get_exact_phrases(self):
-                return {"测试术语": "Temp Translation"}
+                return {"龘靐术语": "Temp Translation"}
 
             def get_word_pairs(self):
                 return []
@@ -212,7 +212,7 @@ class TestPriorityCollisionsAndOverrides(unittest.TestCase):
         kernel.register_plugin(p)
 
         # 1. First translation populates engine cache
-        res1 = kernel.translate_text("测试术语")
+        res1 = kernel.translate_text("龘靐术语")
         self.assertEqual(res1, "Temp Translation")
 
         # 2. Unregister plugin via kernel.unregister_plugin
@@ -221,8 +221,8 @@ class TestPriorityCollisionsAndOverrides(unittest.TestCase):
         self.assertIsNone(kernel.registry.get_plugin("temp_plugin"))
 
         # 3. Cache must be automatically invalidated: subsequent translation purges unregistered translation
-        res2 = kernel.translate_text("测试术语")
-        self.assertEqual(res2, "测试术语",
+        res2 = kernel.translate_text("龘靐术语")
+        self.assertEqual(res2, "龘靐术语",
                          "Cache should be invalidated automatically upon unregistering plugin")
 
     def test_05_word_pairs_longest_match_vs_priority(self):
@@ -253,7 +253,7 @@ class TestPriorityCollisionsAndOverrides(unittest.TestCase):
                 return {}
 
             def get_word_pairs(self):
-                return [("修边刀", "LowPrioTrimmingCutter")]
+                return [("龘靐刀头", "LowPrioTrimmingCutter")]
 
             def get_regex_rules(self):
                 return []
@@ -261,9 +261,10 @@ class TestPriorityCollisionsAndOverrides(unittest.TestCase):
         kernel.register_plugin(HighPriorityShortWord())
         kernel.register_plugin(LowPriorityLongPhrase())
 
-        # "修边刀上升到位" contains "修边刀" (len 3) and "刀" (len 1).
-        # Because greedy match sorts by len(x[0]) descending, "修边刀" is matched first despite lower priority!
-        res = kernel.translate_text("修边刀上升到位")
+        # "龘靐刀头上升" contains "龘靐刀头" (len 4) and "刀" (len 1).
+        # Because greedy match sorts by len(x[0]) descending, "龘靐刀头" is matched first despite lower priority!
+        # (Rare glyphs are used on purpose so the built-in dictionary cannot match part of the sample text.)
+        res = kernel.translate_text("龘靐刀头上升")
         self.assertIn("LowPrioTrimmingCutter", res)
         self.assertNotIn("HighPrioBlade", res)
 
@@ -462,11 +463,11 @@ class TestBackwardCompatibleApiEdgeCases(unittest.TestCase):
         must take immediate effect in engine.translate().
         """
         engine = IndustrialTermEngine()
-        self.assertEqual(engine.translate("动态热添加词条"), "动态热添加词条")
+        self.assertEqual(engine.translate("龘靐热添词"), "龘靐热添词")
 
         # Mutate custom_dict post-init
-        engine.custom_dict["动态热添加词条"] = "Dynamic Post-Init Term"
-        self.assertEqual(engine.translate("动态热添加词条"), "Dynamic Post-Init Term")
+        engine.custom_dict["龘靐热添词"] = "Dynamic Post-Init Term"
+        self.assertEqual(engine.translate("龘靐热添词"), "Dynamic Post-Init Term")
 
     def test_02_exact_phrases_mutation_override_and_addition(self):
         """
@@ -512,7 +513,7 @@ class TestBackwardCompatibleApiEdgeCases(unittest.TestCase):
             priority = 10
 
             def get_exact_phrases(self):
-                return {"全局污染词": "Global Contamination"}
+                return {"龘靐污染词": "Global Contamination"}
 
             def get_word_pairs(self):
                 return []
@@ -526,13 +527,13 @@ class TestBackwardCompatibleApiEdgeCases(unittest.TestCase):
         # Instance 1 and Instance 2 created with default args share k_default
         e1 = IndustrialTermEngine()
         e2 = IndustrialTermEngine()
-        self.assertEqual(e1.translate("全局污染词"), "Global Contamination")
-        self.assertEqual(e2.translate("全局污染词"), "Global Contamination")
+        self.assertEqual(e1.translate("龘靐污染词"), "Global Contamination")
+        self.assertEqual(e2.translate("龘靐污染词"), "Global Contamination")
 
         # An isolated Kernel is NOT contaminated
         k_isolated = Kernel()
         e_isolated = IndustrialTermEngine(kernel=k_isolated)
-        self.assertEqual(e_isolated.translate("全局污染词"), "全局污染词")
+        self.assertEqual(e_isolated.translate("龘靐污染词"), "龘靐污染词")
 
         # Clean up k_default
         k_default.registry.unregister("leaky_plugin")
