@@ -1686,6 +1686,22 @@ class MultiStageTranslationEngine:
 
     def translate(self, text: str, custom_dict: Optional[Dict[str, str]] = None, target_lang: str = "en") -> str:
         """多阶段级联翻译：Exact -> Regex -> Greedy -> Normalization (支持 EN / IT 语言)"""
+        return self._translate(text, custom_dict, target_lang, None)
+
+    def translate_detailed(self, text: str, custom_dict: Optional[Dict[str, str]] = None,
+                           target_lang: str = "en") -> Tuple[str, List[str]]:
+        """同 translate，并额外返回译文所依赖的"单字回退"字符列表 (去重并保持出现顺序)。
+
+        单字回退指 Greedy 阶段靠单个汉字词条完成的替换 (如 测→Measure)。整句没有被精确短语、
+        正则或多字词条覆盖时才会出现，译文可能是语义拼凑的中英混杂，建议人工复核。
+        返回值的第一项与 translate() 完全一致。
+        """
+        trace: List[str] = []
+        res = self._translate(text, custom_dict, target_lang, trace)
+        return res, list(dict.fromkeys(trace))
+
+    def _translate(self, text: str, custom_dict: Optional[Dict[str, str]], target_lang: str,
+                   trace: Optional[List[str]]) -> str:
         if not text:
             return ""
         s = text.strip()
@@ -1725,7 +1741,7 @@ class MultiStageTranslationEngine:
             m = pat.match(s)
             if m:
                 try:
-                    res = handler(m, lambda t: self.translate(t, custom_dict=custom_dict))
+                    res = handler(m, lambda t: self._translate(t, custom_dict, "en", trace))
                     if res is not None:
                         return res
                 except Exception:
@@ -1735,6 +1751,8 @@ class MultiStageTranslationEngine:
         res = s
         for ch, en in self._merged_word_pairs:
             if ch in res:
+                if trace is not None and len(ch) == 1 and en.strip():
+                    trace.append(ch)
                 res = res.replace(ch, f" {en} ")
 
         # Tier 4: Delimiter & Punctuation Sanitization
@@ -1818,6 +1836,11 @@ class Kernel:
 
     def translate_text(self, text: str, custom_dict: Optional[Dict[str, str]] = None, target_lang: str = "en") -> str:
         return self.engine.translate(text, custom_dict=custom_dict, target_lang=target_lang)
+
+    def translate_detailed(self, text: str, custom_dict: Optional[Dict[str, str]] = None,
+                           target_lang: str = "en") -> Tuple[str, List[str]]:
+        """translate_text 的带诊断版本，返回 (译文, 单字回退字符列表)"""
+        return self.engine.translate_detailed(text, custom_dict=custom_dict, target_lang=target_lang)
 
     def derive_chinese_comment(self, var_name: str, existing_comment: str) -> str:
         return self.engine.derive_chinese_comment(var_name, existing_comment)
@@ -1976,6 +1999,45 @@ def get_default_kernel() -> Kernel:
 # 6. Python API 100% 向后兼容门面层 (Legacy Backward Compatibility Facades)
 # =============================================================================
 
+def _translate_traced(term_engine: Any, text: str, target_lang: str) -> Tuple[str, List[str]]:
+    """调用 term_engine 的带诊断翻译；自定义引擎若没有 translate_detailed 则退化为普通 translate"""
+    fn = getattr(term_engine, "translate_detailed", None)
+    if callable(fn):
+        return fn(text, target_lang=target_lang)
+    return term_engine.translate(text, target_lang=target_lang), []
+
+
+def format_review_summary(items: List[Dict[str, Any]], limit: int = 10) -> List[str]:
+    """把待复核条目整理成控制台提示行 (条目为空时返回空列表)"""
+    if not items:
+        return []
+    lines = [f"[Review] {len(items)} 行译文依赖单字回退 (整句未被短语/多字词条覆盖，可能中英混杂)，建议人工复核:"]
+    for it in items[:limit]:
+        lines.append(f"  - {it['file']} #{it['no']} {it['var']}: {it['source']} -> {it['english']}  [单字: {''.join(it['chars'])}]")
+    if len(items) > limit:
+        lines.append(f"  ... 另有 {len(items) - limit} 行，可用 --review-report 导出完整清单")
+    return lines
+
+
+def write_review_report(items: List[Dict[str, Any]], report_path: str) -> None:
+    """导出待复核清单 (UTF-8 Markdown 表格)"""
+    def cell(v: Any) -> str:
+        return str(v).replace("|", "\\|").replace("\n", " ")
+
+    lines = ["# 译文人工复核清单 (单字回退)\n",
+             "> 以下译文的部分内容靠单个汉字词条拼接而成，未被精确短语、正则或多字词条覆盖。"
+             "建议核对后补充到词典插件的 `get_exact_phrases` 中。\n",
+             f"共 **{len(items)}** 行。\n",
+             "| 文件 | 序号 | 变量名 / 地址 | 原文 | 当前译文 | 单字回退 |",
+             "| :--- | :---: | :--- | :--- | :--- | :---: |"]
+    for it in items:
+        lines.append(f"| {cell(it['file'])} | {cell(it['no'])} | `{cell(it['var'])}` | {cell(it['source'])} "
+                     f"| {cell(it['english'])} | {cell(''.join(it['chars']))} |")
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f_out:
+        f_out.write("\n".join(lines) + "\n")
+
+
 class IndustrialTermEngine:
     """工业自动化术语与翻译引擎 (100% 兼容历史 API 与属性访问)"""
 
@@ -1994,28 +2056,32 @@ class IndustrialTermEngine:
 
     def translate(self, text: str, target_lang: str = "en") -> str:
         """纯英文/多语言翻译引擎：输入任意中文或中英混杂文本，返回目标语言翻译"""
+        return self.translate_detailed(text, target_lang=target_lang)[0]
+
+    def translate_detailed(self, text: str, target_lang: str = "en") -> Tuple[str, List[str]]:
+        """translate 的带诊断版本，返回 (译文, 单字回退字符列表)，详见 MultiStageTranslationEngine.translate_detailed"""
         if not text:
-            return ""
+            return "", []
         s = text.strip()
         if not re.search(r'[\u4e00-\u9fff]', s):
-            return s
+            return s, []
 
         # 用户显式传入的自定义字典具有最高仲裁权
         if self.custom_dict and s in self.custom_dict:
-            return self.custom_dict[s]
+            return self.custom_dict[s], []
 
         # 若用户手动向 engine.exact_phrases 注入了非内置自定义词条
         if s in self.exact_phrases and self.exact_phrases.get(s) != BUILTIN_EXACT_PHRASES.get(s):
-            return self.exact_phrases[s]
+            return self.exact_phrases[s], []
 
         # 委托给微内核翻译引擎
         if self.kernel:
-            return self.kernel.translate_text(s, custom_dict=self.custom_dict, target_lang=target_lang)
+            return self.kernel.translate_detailed(s, custom_dict=self.custom_dict, target_lang=target_lang)
 
         if s in self.exact_phrases:
-            return self.exact_phrases[s]
+            return self.exact_phrases[s], []
 
-        return s
+        return s, []
 
     def derive_chinese_comment(self, var_name: str, existing_comment: str) -> str:
         """为规范中文版补齐中文注释"""
@@ -2029,6 +2095,8 @@ class VarTableProcessor:
         self.mode = mode.upper()
         self.kernel = kernel or get_default_kernel()
         self.term_engine = term_engine or IndustrialTermEngine(kernel=self.kernel)
+        # 译文依赖单字回退、建议人工复核的条目 (process_directory 开始时清空，process_file 累加)
+        self.review_items: List[Dict[str, Any]] = []
 
     def process_file(self, src_path: str, dst_en_path: str, dst_cn_path: Optional[str] = None,
                      platform: str = "auto", target_lang: str = "en") -> List[Tuple]:
@@ -2055,10 +2123,12 @@ class VarTableProcessor:
             new_cn_c = self.term_engine.derive_chinese_comment(var, old_c)
 
             # 2. 交付注释翻译
+            fallback_chars: List[str] = []
+            source_text = old_c or var
             if old_c:
-                new_en_c = self.term_engine.translate(old_c, target_lang=target_lang)
+                new_en_c, fallback_chars = _translate_traced(self.term_engine, old_c, target_lang)
             elif re.search(r'[\u4e00-\u9fff]', var):
-                new_en_c = self.term_engine.translate(var, target_lang=target_lang)
+                new_en_c, fallback_chars = _translate_traced(self.term_engine, var, target_lang)
             else:
                 new_en_c = ""
 
@@ -2072,6 +2142,10 @@ class VarTableProcessor:
                 row.extra["new_en_var"] = self.term_engine.translate(var, target_lang=target_lang).replace(' ', '_')
 
             file_records.append((no, var, dtype, new_cn_c_clean, new_en_c_clean))
+            if fallback_chars:
+                self.review_items.append({"file": os.path.basename(src_path), "no": no, "var": var,
+                                          "source": source_text, "english": new_en_c_clean,
+                                          "chars": fallback_chars})
 
         # 根据平台类型智能导出
         if actual_plat == "mitsubishi":
@@ -2093,6 +2167,7 @@ class VarTableProcessor:
         if dst_cn_dir:
             os.makedirs(dst_cn_dir, exist_ok=True)
 
+        self.review_items = []
         all_records = {}
         csv_files = [f for f in sorted(os.listdir(src_dir)) if f.endswith(('.csv', '.tsv')) and not f.endswith('_new.csv')]
 
@@ -2109,7 +2184,14 @@ class VarTableProcessor:
         if report_md_path:
             self.generate_markdown_report(all_records, report_md_path, project_title)
 
+        for line in format_review_summary(self.review_items):
+            print(line)
+
         return all_records
+
+    def write_review_report(self, report_path: str) -> None:
+        """导出最近一次处理中依赖单字回退的待复核清单"""
+        write_review_report(self.review_items, report_path)
 
     def generate_markdown_report(self, all_records: Dict[str, List[Tuple]], report_path: str,
                                  project_title: str = "Corning Project CT173") -> None:
@@ -2124,6 +2206,8 @@ class IOTableProcessor:
     def __init__(self, term_engine: Optional[IndustrialTermEngine] = None, kernel: Optional[Kernel] = None):
         self.kernel = kernel or get_default_kernel()
         self.term_engine = term_engine or IndustrialTermEngine(kernel=self.kernel)
+        # 译文依赖单字回退、建议人工复核的条目 (process_file 累加，调用方按需清空)
+        self.review_items: List[Dict[str, Any]] = []
 
     def process_file(self, src_path: str, dst_en_path: str, dst_cn_path: Optional[str] = None,
                      platform: str = "auto", target_lang: str = "en") -> List[Tuple]:
@@ -2145,12 +2229,16 @@ class IOTableProcessor:
                 addr = parts[0].strip() if len(parts) > 0 else ""
                 old_c = parts[c_idx].strip() if len(parts) > c_idx else ""
 
-            new_en_c = self.term_engine.translate(old_c, target_lang=target_lang).replace(',', ' / ')
+            new_en_c, fallback_chars = _translate_traced(self.term_engine, old_c, target_lang)
+            new_en_c = new_en_c.replace(',', ' / ')
             new_cn_c = old_c.replace(',', '，')
 
             row.extra["new_en_c"] = new_en_c
             row.extra["new_cn_c"] = new_cn_c
             records.append((addr, old_c, new_en_c))
+            if fallback_chars:
+                self.review_items.append({"file": os.path.basename(src_path), "no": row.no, "var": addr,
+                                          "source": old_c, "english": new_en_c, "chars": fallback_chars})
 
         if actual_plat == "mitsubishi":
             self.kernel.export(doc, dst_en_path, format_name="mitsubishi", target_lang=target_lang)
@@ -2162,6 +2250,10 @@ class IOTableProcessor:
                 self.kernel.export(doc, dst_cn_path, format_name="io_csv", is_chinese_backup=True)
 
         return records
+
+    def write_review_report(self, report_path: str) -> None:
+        """导出依赖单字回退的待复核清单"""
+        write_review_report(self.review_items, report_path)
 
 
 class TableVerifier:
@@ -2241,6 +2333,7 @@ def main():
     p_vars.add_argument("--mode", default="B", choices=["A", "B"], help="方案 B(默认，保持变量名不变) / 方案 A(变量名英化)")
     p_vars.add_argument("--report", default=None, help="输出统一 Markdown 对照表文件路径")
     p_vars.add_argument("--title", default="Corning Project Delivery", help="报告标题")
+    p_vars.add_argument("--review-report", default=None, help="导出依赖单字回退、建议人工复核的译文清单 (Markdown)")
     _add_plugin_args(p_vars, is_subparser=True)
 
     # Command: io
@@ -2248,6 +2341,7 @@ def main():
     p_io.add_argument("--src-dir", required=True, help="源 IO 注释表目录")
     p_io.add_argument("--dst-dir", required=True, help="目标交付目录")
     p_io.add_argument("--backup-cn", default=None, help="规范中文备份目录")
+    p_io.add_argument("--review-report", default=None, help="导出依赖单字回退、建议人工复核的译文清单 (Markdown)")
     _add_plugin_args(p_io, is_subparser=True)
 
     # Command: verify
@@ -2280,6 +2374,8 @@ def main():
     if args.command == "vars":
         proc = VarTableProcessor(mode=args.mode, kernel=kernel)
         proc.process_directory(args.src_dir, args.dst_dir, args.backup_cn, report_md_path=args.report, project_title=args.title)
+        if args.review_report:
+            proc.write_review_report(args.review_report)
     elif args.command == "io":
         proc = IOTableProcessor(kernel=kernel)
         for fname in sorted(os.listdir(args.src_dir)):
@@ -2288,6 +2384,10 @@ def main():
                 dp = os.path.join(args.dst_dir, fname)
                 cp = os.path.join(args.backup_cn, fname) if args.backup_cn else None
                 proc.process_file(sp, dp, cp)
+        for line in format_review_summary(proc.review_items):
+            print(line)
+        if args.review_report:
+            proc.write_review_report(args.review_report)
         print("IO 表格批量处理完成！")
     elif args.command == "verify":
         is_var = (args.type == "var")

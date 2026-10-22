@@ -144,13 +144,21 @@
 
 ```
 python core/plc_table_toolkit.py [--plugin FILE]... [--plugins-dir DIR] <命令> ...
-  vars    --src-dir --dst-dir [--backup-cn] [--mode A|B] [--report] [--title]
-  io      --src-dir --dst-dir [--backup-cn]
+  vars    --src-dir --dst-dir [--backup-cn] [--mode A|B] [--report] [--title] [--review-report]
+  io      --src-dir --dst-dir [--backup-cn] [--review-report]
   verify  --src --target [--type var|io] [--mode A|B]   # 失败时退出码 1
   machine --machine-dir [--mode A|B]
 ```
 
 `--plugin` / `--plugins-dir` 在子命令上用 `argparse.SUPPRESS` 作默认值,避免子解析器的默认值覆盖父级已解析的参数。`machine` 假定目录结构为 `io注释_备份_原始留档/变量表` → `变量表`,中文备份写到 `io注释_备份_规范中文版/变量表`,报告落在 `变量表/变量表中英文对照表_Corning交付版.md`。
+
+### 单字回退诊断
+
+- `MultiStageTranslationEngine` / `Kernel` / `IndustrialTermEngine` 新增 `translate_detailed(text, ...)`,返回 `(译文, 单字回退字符列表)`。译文与 `translate()` 完全一致;字符列表是 Greedy 阶段靠单字词条(且译文非空)完成替换的汉字,去重并保持出现顺序。精确短语、`custom_dict`、正则命中的整句不会产生回退;正则处理函数内部递归翻译时产生的回退会一并计入。
+- `VarTableProcessor` / `IOTableProcessor` 的 `review_items` 属性收集这类行(字段 `file`、`no`、`var`、`source`、`english`、`chars`)。`VarTableProcessor.process_directory` 开始时清空并在结束时打印前 10 条汇总;`process_file` 单独调用时只累加。自定义的 `term_engine` 若没有 `translate_detailed`,自动退化为普通 `translate`,不产生复核条目。
+- `write_review_report(path)` 导出完整清单(Markdown 表格)。CLI:`vars` 和 `io` 子命令均支持 `--review-report PATH`。
+- 方案 A 下变量名的英化(`new_en_var`)不在诊断范围内。
+- 完全不认识的词(没有任何词条命中)不会进入清单,仍由 `verify` 的中文残留检查负责。
 
 ## 9. 典型数据流
 
@@ -168,7 +176,7 @@ python core/plc_table_toolkit.py [--plugin FILE]... [--plugins-dir DIR] <命令>
 
 以下是阅读代码时注意到的,供决定是否处理时参考;标"已验证"的在本会话里跑过。
 
-1. **单字词条造成中英混杂**(已验证):601 条词对里有大量单字(如 测→Measure、加→Add、全→All、刀→Cutter),整句没有精确命中时会被切碎替换,例如 `龘靐刀头` → `龘靐 Cutter Head`。`verify` 的"中文残留"检查能抓到未译字符,但抓不到这种半译输出。
+1. **单字词条造成中英混杂**(已验证,**已加诊断**):601 条词对里有 105 条是单字(如 测→Measure、加→Add、刀→Cutter),整句没有被精确短语、正则或多字词条覆盖时会被切碎替换,例如 `测试术语` → `Measure 试术语`。`verify` 的"中文残留"检查抓不到这种半译输出。现在引擎提供 `translate_detailed()`,处理器会收集这类行并在批处理结束时提示,见下文"单字回退诊断"。翻译结果本身没有改变。
 2. **新建 `Kernel()` 不带领域插件**(已验证):只有 `get_default_kernel()` 会自动挂载修边机和光伏词典;自己 `Kernel()` 得到的是纯内置词典。
 3. **`machine` 子命令只处理变量表**:不处理 IO 注释表;并且校验失败也不影响退出码(`verify` 子命令才会 `sys.exit(1)`)。
 4. **`mode A` 下不检查变量名保真**:`Kernel.verify` 只在方案 B 下比较变量名。
